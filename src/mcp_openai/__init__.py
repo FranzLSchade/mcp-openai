@@ -13,3 +13,5 @@ __all__ = [
     "LLMRequestConfig",
     "LLMClientConfig",
 ]
+
+__version__ = "0.0.0"
