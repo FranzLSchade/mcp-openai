@@ -12,7 +12,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv]
-publish-url = "https://test.pypi.org/legacy/"
+publish-url = "https://upload.pypi.org/legacy/"
 
 [tool.ruff]
 line-length = 88
