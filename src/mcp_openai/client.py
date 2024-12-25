@@ -170,8 +170,6 @@ class MCPClient:
                                 ],
                             )
                         )
-                        # TODO: make this parallel using asyncio.gather
-
                         tasks = [
                             asyncio.create_task(self.process_tool_call(tool_call))
                             for tool_call in tool_calls

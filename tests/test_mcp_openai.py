@@ -52,9 +52,6 @@ class TestServer:
         messages = [{"role": "user", "content": f"What is {a} + {b}?"}]
         messages = await client.process_messages(messages)
         response = messages[-1]["content"]
-        from pprint import pprint
-
-        pprint(messages)
         assert str(a + b) in response
         assert len(messages) == 4
 
