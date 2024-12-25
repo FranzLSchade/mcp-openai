@@ -30,7 +30,7 @@ uv add mcp-openai
 
 or use classic pip install.
 
-#### Create a MCP client
+### Create a MCP client
 
 Now you can create a MCP client by specifying your custom configuration.
 
@@ -62,7 +62,7 @@ client = MCPClient(
 )
 ```
 
-#### Connect and process messages with MCP client
+### Connect and process messages with MCP client
 
 ```python
 async def main():
