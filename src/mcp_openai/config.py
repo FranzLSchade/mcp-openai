@@ -14,7 +14,7 @@ class MCPServerConfig:
     env: dict[str, str] | None = None
     description: str | None = None
     enabled: bool = True
-
+    cwd: str | None = None
 
 @dataclass
 class MCPClientConfig:

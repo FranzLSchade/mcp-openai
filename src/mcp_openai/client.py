@@ -2,10 +2,10 @@ import asyncio
 import json
 from contextlib import AsyncExitStack
 from dataclasses import asdict
-from typing import Optional
+from typing import Optional, Dict, List, Tuple
 
 from dotenv import load_dotenv
-from mcp import ClientSession, StdioServerParameters
+from mcp import ClientSession, StdioServerParameters, Tool
 from mcp.client.stdio import stdio_client
 from openai import AsyncOpenAI
 from openai.types.chat import (
@@ -34,9 +34,11 @@ class MCPClient:
         self.llm_client_config = llm_client_config
         self.llm_request_config = llm_request_config
         self.llm_client = AsyncOpenAI(**asdict(self.llm_client_config))
-        self.session: Optional[ClientSession] = None
         self.exit_stack = AsyncExitStack()
-        self.current_server = None
+
+        # NEW: Store sessions and tools in dictionaries
+        self.sessions: Dict[str, ClientSession] = {}
+        self.available_tools: Dict[str, Tool] = {} # Mapping tool_name to Tool object
 
         print("CLIENT CREATED")
 
@@ -57,28 +59,57 @@ class MCPClient:
         stdio_transport = await self.exit_stack.enter_async_context(
             stdio_client(stdio_server_params)
         )
-        self.stdio, self.write = stdio_transport
-        self.session = await self.exit_stack.enter_async_context(
-            ClientSession(self.stdio, self.write)
+        stdio_reader, stdio_writer = stdio_transport # Renamed for clarity
+        session = await self.exit_stack.enter_async_context(
+            ClientSession(stdio_reader, stdio_writer)
         )
 
-        await self.session.initialize()  # type: ignore
-        self.current_server = server_name
+        await session.initialize()  # type: ignore
+        self.sessions[server_name] = session # NEW: Store the session under its name
 
-        # List available tools
-        response = await self.session.list_tools()  # type: ignore
-        print(f"CLIENT CONNECT to {server_name}")
-        print("AVAILABLE TOOLS", [tool.name for tool in response.tools])
+        # List available tools and store them
+        response = await session.list_tools()  # type: ignore
+        print(f"CLIENT CONNECTED to {server_name}")
+        print("AVAILABLE TOOLS FOR THIS SERVER", [tool.name for tool in response.tools])
+        for tool in response.tools:
+            # NEW: Aggregate tools from all servers.
+            # Here, you might need to handle naming conflicts if tools from different servers have the same name.
+            # For now, simply add them.
+            self.available_tools[tool.name] = tool
+
+    async def _get_server_for_tool(self, tool_name: str) -> ClientSession:
+        """Helper to find which server provides a specific tool"""
+        # This is a simplified implementation.
+        # In a more complex environment, you might need to know which server offers which tool.
+        # For now, we simply iterate through all sessions until we find the tool.
+        # A better solution would be to store which server provides each tool when collecting them.
+
+        # Since we aggregate 'self.available_tools', we could use the tool name here
+        # to identify the server that registered this tool.
+        # This would require extended storage in connect_to_server.
+        # But for now, we can simply iterate:
+        for server_name, session in self.sessions.items():
+            server_tools_response = await session.list_tools()
+            if any(tool.name == tool_name for tool in server_tools_response.tools):
+                return session
+        raise ValueError(f"Tool '{tool_name}' not found on any connected server.")
+
 
     async def process_tool_call(self, tool_call) -> ChatCompletionToolMessageParam:
         match tool_call.type:
             case "function":
                 tool_name = tool_call.function.name
                 tool_args = json.loads(tool_call.function.arguments)
-                call_tool_result = await self.session.call_tool(tool_name, tool_args)  # type: ignore
+
+                # NEW: Find the correct session for the tool call
+                target_session = await self._get_server_for_tool(tool_name)
+
+                call_tool_result = await target_session.call_tool(tool_name, tool_args)  # type: ignore
 
                 if call_tool_result.isError:
-                    raise ValueError("An error occurred while calling the tool.")
+                    # Improved error message
+                    error_message = f"An error occurred while calling the tool '{tool_name}': {call_tool_result.error if hasattr(call_tool_result, 'error') else call_tool_result} Tool call arguments: {tool_args}"
+                    raise ValueError(error_message)
 
                 results = []
                 for result in call_tool_result.content:
@@ -109,8 +140,10 @@ class MCPClient:
         llm_request_config: LLMRequestConfig | None = None,
     ) -> list[ChatCompletionMessageParam]:
         # Set up tools and LLM request config
-        if not self.session:
+        if not self.sessions: # Check if any sessions exist
             raise RuntimeError("Not connected to any server")
+
+        # NEW: Use the aggregated tools
         tools = [
             ChatCompletionToolParam(
                 type="function",
@@ -120,8 +153,9 @@ class MCPClient:
                     parameters=tool.inputSchema,
                 ),
             )
-            for tool in (await self.session.list_tools()).tools
+            for tool_name, tool in self.available_tools.items()
         ]
+
         llm_request_config = LLMRequestConfig(
             **{
                 **asdict(self.llm_request_config),
@@ -266,7 +300,7 @@ class MCPClient:
                         raise ValueError(f"Unknown finish reason: {finish_reason}")
 
             case "developer":
-                raise NotImplementedError("Developer messaages are not supported")
+                raise NotImplementedError("Developer messages are not supported")
             case "system":
                 raise NotImplementedError("System messages are not supported")
             case "function":
@@ -274,6 +308,8 @@ class MCPClient:
             case _:
                 raise ValueError(f"Invalid message role: {last_message_role}")
 
+
     async def cleanup(self):
         """Clean up resources"""
+        # Close all sessions in the exit stack
         await self.exit_stack.aclose()
