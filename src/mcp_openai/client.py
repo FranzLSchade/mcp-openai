@@ -20,6 +20,9 @@ from openai.types.shared_params.function_definition import FunctionDefinition
 
 from .config import LLMClientConfig, LLMRequestConfig, MCPClientConfig
 
+# NEW: Importiere 'os' für die Pfadnormalisierung
+import os
+
 load_dotenv()
 
 
@@ -135,60 +138,67 @@ class MCPClient:
                 raise ValueError(f"Unknown tool call type: {tool_call.type}")
 
     async def process_messages(
-        self,
-        messages: list[ChatCompletionMessageParam],
-        llm_request_config: LLMRequestConfig | None = None,
-    ) -> list[ChatCompletionMessageParam]:
-        # Set up tools and LLM request config
-        if not self.sessions: # Check if any sessions exist
-            raise RuntimeError("Not connected to any server")
+            self,
+            messages: list[ChatCompletionMessageParam],
+            llm_request_config: LLMRequestConfig | None = None,
+        ) -> list[ChatCompletionMessageParam]:
+            # Set up tools and LLM request config
+            if not self.sessions: # Check if any sessions exist
+                raise RuntimeError("Not connected to any server")
 
-        # NEW: Use the aggregated tools
-        tools = [
-            ChatCompletionToolParam(
-                type="function",
-                function=FunctionDefinition(
-                    name=tool.name,
-                    description=tool.description if tool.description else "",
-                    parameters=tool.inputSchema,
-                ),
-            )
-            for tool_name, tool in self.available_tools.items()
-        ]
-
-        llm_request_config = LLMRequestConfig(
-            **{
-                **asdict(self.llm_request_config),
-                **(asdict(llm_request_config) if llm_request_config else {}),
-            }
-        )
-
-        last_message_role = messages[-1]["role"]
-
-        match last_message_role:
-            case "user":
-                response = await self.llm_client.chat.completions.create(
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="auto",
-                    **asdict(llm_request_config),
+            # NEW: Dieser Block muss HIER sein, um 'tools' zu definieren!
+            # Use the aggregated tools
+            tools = [
+                ChatCompletionToolParam(
+                    type="function",
+                    function=FunctionDefinition(
+                        name=tool.name,
+                        description=tool.description if tool.description else "",
+                        parameters=tool.inputSchema,
+                    ),
                 )
-                finish_reason = response.choices[0].finish_reason
+                for tool_name, tool in self.available_tools.items()
+            ]
 
-                match finish_reason:
-                    case "stop":
-                        messages.append(
+            llm_request_config = LLMRequestConfig(
+                **{
+                    **asdict(self.llm_request_config),
+                    **(asdict(llm_request_config) if llm_request_config else {}),
+                }
+            )
+
+            last_message_role = messages[-1]["role"]
+
+            current_messages = list(messages) # Arbeite mit einer Kopie, um Seiteneffekte zu vermeiden
+
+            match last_message_role:
+                case "user":
+                    print("Current messages")
+                    print(current_messages)
+                    print(tools)
+                    print(llm_request_config)
+                    response = await self.llm_client.chat.completions.create(
+                        messages=current_messages, # Sende den aktuellen Verlauf
+                        tools=tools,
+                        tool_choice="auto",
+                        **asdict(llm_request_config),
+                    )
+                    finish_reason = response.choices[0].finish_reason
+                    print("Response")
+                    print(response)
+                    if finish_reason == "stop":
+                        current_messages.append(
                             ChatCompletionAssistantMessageParam(
                                 role="assistant",
                                 content=response.choices[0].message.content,
                             )
                         )
-                        return messages
+                        return current_messages # Fertig, wenn der Assistent aufhört
 
-                    case "tool_calls":
+                    elif finish_reason == "tool_calls":
                         tool_calls = response.choices[0].message.tool_calls
                         assert tool_calls is not None
-                        messages.append(
+                        current_messages.append(
                             ChatCompletionAssistantMessageParam(
                                 role="assistant",
                                 tool_calls=[
@@ -208,37 +218,101 @@ class MCPClient:
                             asyncio.create_task(self.process_tool_call(tool_call))
                             for tool_call in tool_calls
                         ]
-                        messages.extend(await asyncio.gather(*tasks))
-                        return await self.process_messages(messages, llm_request_config)
-                    case "length":
-                        raise ValueError("Length limit reached")
-                    case "content_filter":
-                        raise ValueError("Content filter triggered")
-                    case "function_call":
-                        raise NotImplementedError("Function call not implemented")
-                    case _:
+                        tool_results = await asyncio.gather(*tasks)
+                        current_messages.extend(tool_results)
+                        print("WENN TOOL CALL AUFGERUFEN")
+                        print(current_messages)
+                        return await self.process_messages(current_messages, llm_request_config)
+
+
+                    else: # Handle other finish reasons
                         raise ValueError(f"Unknown finish reason: {finish_reason}")
 
-            case "assistant":
-                # NOTE: the only purpose of this case is to trigger other tool
-                # calls based on the results of the previous tool calls
-                response = await self.llm_client.chat.completions.create(
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="auto",
-                    **asdict(llm_request_config),
-                )
-                finish_reason = response.choices[0].finish_reason
+                case "assistant":
+                    if current_messages and current_messages[-1]["role"] == "tool":
+                        response = await self.llm_client.chat.completions.create(
+                            messages=current_messages,
+                            tools=tools, # Tools erneut anbieten, falls weitere Schritte notwendig sind
+                            tool_choice="auto", # Kann auch "none" sein, wenn keine weiteren Tools erwartet werden
+                            **asdict(llm_request_config),
+                        )
+                        finish_reason = response.choices[0].finish_reason
+                        print("Current messages")
+                        print(current_messages)
+                        print(tools)
+                        print(llm_request_config)
+                        print("Response")
+                        print(response)
+                        if finish_reason == "stop":
+                            if response.choices[0].message.content:
+                                current_messages.append(
+                                    ChatCompletionAssistantMessageParam(
+                                        role="assistant",
+                                        content=response.choices[0].message.content,
+                                    )
+                                )
+                            return current_messages
 
-                match finish_reason:
-                    case "stop":
-                        # NOTE: we do not add the last response message
-                        return messages
+                        elif finish_reason == "tool_calls":
+                            tool_calls = response.choices[0].message.tool_calls
+                            assert tool_calls is not None
+                            current_messages.append(
+                                ChatCompletionAssistantMessageParam(
+                                    role="assistant",
+                                    tool_calls=[
+                                        ChatCompletionMessageToolCallParam(
+                                            id=tool_call.id,
+                                            function=Function(
+                                                arguments=tool_call.function.arguments,
+                                                name=tool_call.function.name,
+                                            ),
+                                            type=tool_call.type,
+                                        )
+                                        for tool_call in tool_calls
+                                    ],
+                                )
+                            )
+                            tasks = [
+                                asyncio.create_task(self.process_tool_call(tool_call))
+                                for tool_call in tool_calls
+                            ]
+                            tool_results = await asyncio.gather(*tasks)
+                            current_messages.extend(tool_results)
+                            return await self.process_messages(current_messages, llm_request_config)
 
-                    case "tool_calls":
+                        else:
+                            raise ValueError(f"Unknown finish reason after tool results: {finish_reason}")
+
+                    return current_messages
+
+                case "tool":
+                    response = await self.llm_client.chat.completions.create(
+                        messages=current_messages,
+                        tools=tools, # Tools anbieten, falls das Modell weitere Schritte vorschlagen will
+                        tool_choice="auto",
+                        **asdict(llm_request_config),
+                    )
+                    print("Current messages")
+                    print(current_messages)
+                    print(tools)
+                    print(llm_request_config)
+                    print("Response")
+                    print(response)
+                    finish_reason = response.choices[0].finish_reason
+
+                    if finish_reason == "stop":
+                        current_messages.append(
+                            ChatCompletionAssistantMessageParam(
+                                role="assistant",
+                                content=response.choices[0].message.content,
+                            )
+                        )
+                        return current_messages
+
+                    elif finish_reason == "tool_calls":
                         tool_calls = response.choices[0].message.tool_calls
                         assert tool_calls is not None
-                        messages.append(
+                        current_messages.append(
                             ChatCompletionAssistantMessageParam(
                                 role="assistant",
                                 tool_calls=[
@@ -254,59 +328,25 @@ class MCPClient:
                                 ],
                             )
                         )
-                        results_messages = [
-                            await self.process_tool_call(tool_call)
+                        tasks = [
+                            asyncio.create_task(self.process_tool_call(tool_call))
                             for tool_call in tool_calls
                         ]
-                        messages.extend(results_messages)
-                        return await self.process_messages(messages, llm_request_config)
-                    case "length":
-                        raise ValueError("Length limit reached")
-                    case "content_filter":
-                        raise ValueError("Content filter triggered")
-                    case "function_call":
-                        raise NotImplementedError("Function call not implemented")
-                    case _:
-                        raise ValueError(f"Unknown finish reason: {finish_reason}")
+                        tool_results = await asyncio.gather(*tasks)
+                        current_messages.extend(tool_results)
+                        return await self.process_messages(current_messages, llm_request_config)
 
-            case "tool":
-                response = await self.llm_client.chat.completions.create(
-                    messages=messages,
-                    **asdict(llm_request_config),
-                )
-                finish_reason = response.choices[0].finish_reason
+                    else:
+                        raise ValueError(f"Unknown finish reason after tool message: {finish_reason}")
 
-                match finish_reason:
-                    case "stop":
-                        messages.append(
-                            ChatCompletionAssistantMessageParam(
-                                role="assistant",
-                                content=response.choices[0].message.content,
-                            )
-                        )
-
-                        return await self.process_messages(messages, llm_request_config)
-                    case "tool_calls":
-                        raise ValueError(
-                            "The message following a tool message cannot be a tool call"
-                        )
-                    case "length":
-                        raise ValueError("Length limit reached")
-                    case "content_filter":
-                        raise ValueError("Content filter triggered")
-                    case "function_call":
-                        raise NotImplementedError("Function call not implemented")
-                    case _:
-                        raise ValueError(f"Unknown finish reason: {finish_reason}")
-
-            case "developer":
-                raise NotImplementedError("Developer messages are not supported")
-            case "system":
-                raise NotImplementedError("System messages are not supported")
-            case "function":
-                raise NotImplementedError("System messages are not supported")
-            case _:
-                raise ValueError(f"Invalid message role: {last_message_role}")
+                case "developer":
+                    raise NotImplementedError("Developer messages are not supported")
+                case "system":
+                    raise NotImplementedError("System messages are not supported in this context")
+                case "function":
+                    raise NotImplementedError("Function messages are not supported; use 'tool' role")
+                case _:
+                    raise ValueError(f"Invalid message role: {last_message_role}")
 
 
     async def cleanup(self):
