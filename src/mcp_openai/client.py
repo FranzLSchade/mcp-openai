@@ -160,6 +160,19 @@ class MCPClient:
                 for tool_name, tool in self.available_tools.items()
             ]
 
+            # System Prompt
+            system_prompt_text = (
+                "Du bist ein hilfreicher Assistent, der Nutzern hilft, strukturierte Aufgaben zu erfüllen. "
+                "Nutze bei Bedarf die verfügbaren Tools, um die Nutzeranfragen zu bearbeiten.\n\n"
+            )
+
+            # Nur hinzufügen, wenn keine Systemnachricht vorhanden ist
+            if not any(msg["role"] == "system" for msg in messages):
+                system_message = {"role": "system", "content": system_prompt_text}
+                messages.insert(0, system_message)
+            else:
+                system_message = next((m for m in messages if m["role"] == "system"), None)
+
             llm_request_config = LLMRequestConfig(
                 **{
                     **asdict(self.llm_request_config),
@@ -173,10 +186,10 @@ class MCPClient:
 
             match last_message_role:
                 case "user":
-                    print("Current messages")
+                    print("CURRENT MESSAGES")
+                    print("-------------------------------------------------------")
                     print(current_messages)
-                    print(tools)
-                    print(llm_request_config)
+                    print("-------------------------------------------------------")
                     response = await self.llm_client.chat.completions.create(
                         messages=current_messages, # Sende den aktuellen Verlauf
                         tools=tools,
@@ -184,8 +197,7 @@ class MCPClient:
                         **asdict(llm_request_config),
                     )
                     finish_reason = response.choices[0].finish_reason
-                    print("Response")
-                    print(response)
+
                     if finish_reason == "stop":
                         current_messages.append(
                             ChatCompletionAssistantMessageParam(
@@ -220,8 +232,7 @@ class MCPClient:
                         ]
                         tool_results = await asyncio.gather(*tasks)
                         current_messages.extend(tool_results)
-                        print("WENN TOOL CALL AUFGERUFEN")
-                        print(current_messages)
+
                         return await self.process_messages(current_messages, llm_request_config)
 
 
@@ -237,12 +248,7 @@ class MCPClient:
                             **asdict(llm_request_config),
                         )
                         finish_reason = response.choices[0].finish_reason
-                        print("Current messages")
-                        print(current_messages)
-                        print(tools)
-                        print(llm_request_config)
-                        print("Response")
-                        print(response)
+
                         if finish_reason == "stop":
                             if response.choices[0].message.content:
                                 current_messages.append(
@@ -292,12 +298,7 @@ class MCPClient:
                         tool_choice="auto",
                         **asdict(llm_request_config),
                     )
-                    print("Current messages")
-                    print(current_messages)
-                    print(tools)
-                    print(llm_request_config)
-                    print("Response")
-                    print(response)
+
                     finish_reason = response.choices[0].finish_reason
 
                     if finish_reason == "stop":
