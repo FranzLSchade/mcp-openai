@@ -32,6 +32,7 @@ class MCPClient:
         mpc_client_config: MCPClientConfig = MCPClientConfig(),
         llm_client_config: LLMClientConfig = LLMClientConfig(),
         llm_request_config: LLMRequestConfig = LLMRequestConfig("gpt-4o"),
+        system_prompt: Optional[str] = None
     ):
         self.mpc_client_config = mpc_client_config
         self.llm_client_config = llm_client_config
@@ -42,8 +43,17 @@ class MCPClient:
         # NEW: Store sessions and tools in dictionaries
         self.sessions: Dict[str, ClientSession] = {}
         self.available_tools: Dict[str, Tool] = {} # Mapping tool_name to Tool object
+        self.system_prompt = system_prompt or (
+            "Du bist ein hilfreicher Assistent, der Nutzern hilft, strukturierte Aufgaben zu erfüllen. "
+            "Nutze bei Bedarf die verfügbaren Tools, um die Nutzeranfragen zu bearbeiten.\n\n"
+        )
 
         print("CLIENT CREATED")
+
+    def set_system_prompt(self, prompt: str):
+        """Setzt den System-Prompt von außen"""
+        self.system_prompt = prompt
+
 
     async def connect_to_server(self, server_name: str):
         """Connect to an MCP server using its configuration name"""
@@ -160,15 +170,9 @@ class MCPClient:
                 for tool_name, tool in self.available_tools.items()
             ]
 
-            # System Prompt
-            system_prompt_text = (
-                "Du bist ein hilfreicher Assistent, der Nutzern hilft, strukturierte Aufgaben zu erfüllen. "
-                "Nutze bei Bedarf die verfügbaren Tools, um die Nutzeranfragen zu bearbeiten.\n\n"
-            )
-
             # Nur hinzufügen, wenn keine Systemnachricht vorhanden ist
             if not any(msg["role"] == "system" for msg in messages):
-                system_message = {"role": "system", "content": system_prompt_text}
+                system_message = {"role": "system", "content": self.system_prompt}
                 messages.insert(0, system_message)
             else:
                 system_message = next((m for m in messages if m["role"] == "system"), None)
@@ -183,13 +187,14 @@ class MCPClient:
             last_message_role = messages[-1]["role"]
 
             current_messages = list(messages) # Arbeite mit einer Kopie, um Seiteneffekte zu vermeiden
+            print("CURRENT MESSAGES")
+            print("-------------------------------------------------------")
+            print(current_messages)
+            print("-------------------------------------------------------")
+
 
             match last_message_role:
                 case "user":
-                    print("CURRENT MESSAGES")
-                    print("-------------------------------------------------------")
-                    print(current_messages)
-                    print("-------------------------------------------------------")
                     response = await self.llm_client.chat.completions.create(
                         messages=current_messages, # Sende den aktuellen Verlauf
                         tools=tools,
