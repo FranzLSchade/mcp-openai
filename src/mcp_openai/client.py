@@ -20,7 +20,6 @@ from openai.types.shared_params.function_definition import FunctionDefinition
 
 from .config import LLMClientConfig, LLMRequestConfig, MCPClientConfig
 
-# NEW: Importiere 'os' für die Pfadnormalisierung
 import os
 
 load_dotenv()
@@ -51,7 +50,7 @@ class MCPClient:
         print("CLIENT CREATED")
 
     def set_system_prompt(self, prompt: str):
-        """Setzt den System-Prompt von außen"""
+        """Set system prompt from outside"""
         self.system_prompt = prompt
 
 
@@ -152,11 +151,20 @@ class MCPClient:
             messages: list[ChatCompletionMessageParam],
             llm_request_config: LLMRequestConfig | None = None,
         ) -> list[ChatCompletionMessageParam]:
+            """
+            This method manages the answering of user messages. If the last message is a user message the model answer
+            gets added to the chat history. If the model decides to answer with a tool call the tool calls get processed,
+            sent to the corresponding mcp server and the model gets the results. Based on the results another model answer
+            is generated and sent back to the user.
+            :param messages: Chat history
+            :param llm_request_config: 
+            :return: New chat history
+            """
             # Set up tools and LLM request config
             if not self.sessions: # Check if any sessions exist
                 raise RuntimeError("Not connected to any server")
 
-            # NEW: Dieser Block muss HIER sein, um 'tools' zu definieren!
+            # NEW: This block defines tools
             # Use the aggregated tools
             tools = [
                 ChatCompletionToolParam(
@@ -170,7 +178,7 @@ class MCPClient:
                 for tool_name, tool in self.available_tools.items()
             ]
 
-            # Nur hinzufügen, wenn keine Systemnachricht vorhanden ist
+            # Add system prompt if not present
             if not any(msg["role"] == "system" for msg in messages):
                 system_message = {"role": "system", "content": self.system_prompt}
                 messages.insert(0, system_message)
@@ -186,17 +194,12 @@ class MCPClient:
 
             last_message_role = messages[-1]["role"]
 
-            current_messages = list(messages) # Arbeite mit einer Kopie, um Seiteneffekte zu vermeiden
-            print("CURRENT MESSAGES")
-            print("-------------------------------------------------------")
-            print(current_messages)
-            print("-------------------------------------------------------")
-
+            current_messages = list(messages)
 
             match last_message_role:
                 case "user":
                     response = await self.llm_client.chat.completions.create(
-                        messages=current_messages, # Sende den aktuellen Verlauf
+                        messages=current_messages,
                         tools=tools,
                         tool_choice="auto",
                         **asdict(llm_request_config),
@@ -210,7 +213,7 @@ class MCPClient:
                                 content=response.choices[0].message.content,
                             )
                         )
-                        return current_messages # Fertig, wenn der Assistent aufhört
+                        return current_messages
 
                     elif finish_reason == "tool_calls":
                         tool_calls = response.choices[0].message.tool_calls
@@ -248,8 +251,8 @@ class MCPClient:
                     if current_messages and current_messages[-1]["role"] == "tool":
                         response = await self.llm_client.chat.completions.create(
                             messages=current_messages,
-                            tools=tools, # Tools erneut anbieten, falls weitere Schritte notwendig sind
-                            tool_choice="auto", # Kann auch "none" sein, wenn keine weiteren Tools erwartet werden
+                            tools=tools,
+                            tool_choice="auto",
                             **asdict(llm_request_config),
                         )
                         finish_reason = response.choices[0].finish_reason
@@ -299,7 +302,7 @@ class MCPClient:
                 case "tool":
                     response = await self.llm_client.chat.completions.create(
                         messages=current_messages,
-                        tools=tools, # Tools anbieten, falls das Modell weitere Schritte vorschlagen will
+                        tools=tools,
                         tool_choice="auto",
                         **asdict(llm_request_config),
                     )
